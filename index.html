@@ -129,6 +129,9 @@ ul.recs{list-style:none;margin:0;padding:0}
 /* settings */
 .set-row{display:flex;gap:8px;align-items:flex-end}
 .set-row label{flex:1}
+label.check{display:flex;align-items:center;gap:8px;margin:12px 0 2px;font-size:15px;color:var(--text);font-weight:500}
+label.check input{width:22px;height:22px;accent-color:var(--accent)}
+.btn:disabled{opacity:.6}
 table.ref{width:100%;border-collapse:collapse;font-size:14px}
 table.ref td{padding:6px 4px;border-bottom:1px solid var(--line)}
 ol.steps{padding-left:20px;margin:6px 0}
@@ -213,6 +216,19 @@ dialog .card{margin:0;border:0;box-shadow:none;background:var(--bg)}
       <button class="btn block" id="expRange">匯出此範圍</button>
       <button class="btn block" id="expAll">匯出全部紀錄</button>
       <p class="muted"><small>Excel 檔包含：每筆紀錄、每週平均、每月平均三個工作表。iPhone 上可選「儲存到檔案」或用 Excel 開啟。</small></p>
+    </div>
+    <div class="card">
+      <h2>☁️ 自動上傳到 Google 雲端硬碟</h2>
+      <p class="muted"><small>每月最後一天打開 App 或新增紀錄時，會自動把本月的 Excel 上傳到你的雲端資料夾（同名檔案會更新為最新版本）。如果最後一天沒有打開 App，下個月第一次打開時會補傳。</small></p>
+      <label>上傳網址（Apps Script）<input type="text" id="driveUrl" placeholder="https://script.google.com/macros/s/…/exec" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+      <label style="margin-top:8px">密碼<input type="text" id="driveSecret" placeholder="與 Apps Script 中的 SECRET 相同" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+      <label class="check"><input type="checkbox" id="driveAuto"> 每月月底自動上傳</label>
+      <button class="btn block" id="driveTest">測試連線</button>
+      <div class="row2" style="margin-top:0">
+        <button class="btn block" id="driveNowPrev">立即上傳上個月</button>
+        <button class="btn block" id="driveNowCur">立即上傳本月</button>
+      </div>
+      <p class="muted" id="driveStatus"></p>
     </div>
     <div class="card">
       <h2>⏰ 提醒（加入 iPhone 行事曆）</h2>

@@ -12,6 +12,7 @@ An iPhone home-screen web app (PWA): no App Store, works offline, and data stays
 | Sunday 10 AM alert | **設定 → 每週日 上午10:00 查看週報** adds a repeating iPhone Calendar alert. There's also an optional daily "time to measure" reminder. |
 | Excel | **設定 → 匯出 Excel** for all records or a date range, or **月曆 → 匯出本月**. The `.xlsx` has 3 sheets: 血壓紀錄, 每週平均, 每月平均. |
 | Monthly paging + calendar | **月曆** tab: swipe or ‹ › to change month. Tap the month title for a 12-month picker with record counts. Each day shows its average and a colour dot. Tap a day to filter. |
+| Google Drive auto-upload | On the **last day of each month**, opening the app or saving a reading uploads that month's Excel (`血壓紀錄_yymm.xlsx`) to your Drive folder. Each new upload replaces the earlier file with the same name. If the app isn't opened on the last day, it uploads the next time it's opened. Uses your own Apps Script; see `google-apps-script.js` for the one-time setup. |
 | App icon | The cat image (`icons/`). |
 | Backup | **設定 → 備份資料 / 從備份檔還原** (JSON). Back up monthly to iCloud Drive. |
 

@@ -372,9 +372,15 @@ function renderSettings() {
   if (!$('#expFrom').value) $('#expFrom').value = records[0]?.date || isoDate(new Date());
   if (!$('#expTo').value) $('#expTo').value = isoDate(new Date());
   const first = records[0], last = records[records.length - 1];
-  $('#dataInfo').innerHTML = `<small>目前共 ${records.length} 筆紀錄${first ? `（${fmtDate(first.date)} – ${fmtDate(last.date)}）` : ''}</small>`;
+  $('#driveUrl').value = settings.driveUrl || '';
+  $('#driveSecret').value = settings.driveSecret || '';
+  $('#driveAuto').checked = settings.driveAuto !== false;
+  const lu = settings.lastUpload;
+  $('#driveStatus').innerHTML = `<small>${!driveReady() ? '尚未設定' : lu ? `上次上傳：${esc(lu.name)}（${fmtDate(isoDate(new Date(lu.at)))} ${fmtTime(new Date(lu.at).toTimeString().slice(0, 5))}）` : '已設定，尚未上傳'}${settings.lastUploadError ? `<br>⚠️ 上次自動上傳失敗：${esc(settings.lastUploadError)}` : ''}</small>`;
+  $('#dataInfo').innerHTML =`<small>目前共 ${records.length} 筆紀錄${first ? `（${fmtDate(first.date)} – ${fmtDate(last.date)}）` : ''}</small>`;
 }
-function renderAll() { renderHome(); renderCal(); renderWeek(); renderSettings(); }
+function renderAll() { renderHome(); renderCal(); renderWeek(); renderSettings(); if (typeof autoUpload === 'function' && booted) autoUpload(); }
+let booted = false;
 
 /* ---------- export / files ---------- */
 async function saveBlob(blob, name) {
@@ -392,6 +398,9 @@ async function saveBlob(blob, name) {
 }
 function exportExcel(list, label) {
   if (!list.length) return toast('此範圍沒有紀錄');
+  saveBlob(buildWorkbook(list), `血壓紀錄_${label}.xlsx`);
+}
+function buildWorkbook(list) {
   const asc = [...list].sort(cmp);
   const one = (x) => (x == null ? '' : Math.round(x * 10) / 10);
   const recRows = [['日期', '星期', '時間', '收縮壓', '舒張壓', '脈搏', '分類', '備註'],
@@ -402,12 +411,69 @@ function exportExcel(list, label) {
   for (const r of asc) { const k = r.date.slice(0, 7); if (!months.has(k)) months.set(k, []); months.get(k).push(r); }
   const moRows = [['月份', '次數', '平均收縮壓', '平均舒張壓', '平均脈搏', '最高收縮壓', '最低收縮壓', '分類'],
     ...[...months.entries()].map(([k, l]) => { const s = stats(l); return [k.slice(2).replace('-', '/'), s.n, one(s.sys), one(s.dia), one(s.pulse), s.sysMax, s.sysMin, category(s.sys, s.dia).t]; })];
-  const blob = XLSXMini.build([
+  return XLSXMini.build([
     { name: '血壓紀錄', rows: recRows, widths: [11, 7, 11, 9, 9, 8, 14, 30] },
     { name: '每週平均', rows: wkRows, widths: [11, 11, 7, 11, 11, 10, 14, 14, 18, 18, 11, 11, 14] },
     { name: '每月平均', rows: moRows, widths: [9, 7, 11, 11, 10, 11, 11, 14] },
   ]);
-  saveBlob(blob, `血壓紀錄_${label}.xlsx`);
+}
+
+/* ---------- Google Drive upload (via the user's own Apps Script web app) ---------- */
+const driveReady = () => !!(settings.driveUrl && settings.driveSecret);
+const blobToBase64 = (blob) => new Promise((res, rej) => {
+  const fr = new FileReader();
+  fr.onload = () => res(String(fr.result).split(',')[1]);
+  fr.onerror = rej;
+  fr.readAsDataURL(blob);
+});
+async function drivePost(payload) {
+  // text/plain body avoids a CORS preflight, which Apps Script does not answer
+  const res = await fetch(settings.driveUrl, { method: 'POST', body: JSON.stringify({ secret: settings.driveSecret, ...payload }) });
+  const data = await res.json().catch(() => ({ ok: false, error: '回應格式不正確，請確認網址' }));
+  if (!data.ok) throw new Error(data.error || '上傳失敗');
+  return data;
+}
+/** A short signature of a month's records, so edits after upload trigger a re-upload. */
+function monthSig(list) {
+  let h = 0;
+  for (const c of JSON.stringify(list.map((r) => [r.date, r.time, r.sys, r.dia, r.pulse, r.note]))) h = (h * 31 + c.charCodeAt(0)) | 0;
+  return `${list.length}:${h}`;
+}
+async function uploadMonth(y, m) {
+  const list = monthRecords(y, m);
+  if (!list.length) throw new Error(`${y}年${m + 1}月沒有紀錄`);
+  const name = `血壓紀錄_${String(y).slice(2)}${pad(m + 1)}.xlsx`;
+  const data = await blobToBase64(buildWorkbook(list));
+  await drivePost({ name, data });
+  settings.uploaded = { ...(settings.uploaded || {}), [monthKey(y, m)]: monthSig(list) };
+  settings.lastUpload = { name, at: new Date().toISOString() };
+  saveSettings(); renderSettings();
+  return name;
+}
+let uploading = false;
+const isLastDayOfMonth = (d = new Date()) => addDays(d, 1).getDate() === 1;
+/**
+ * Runs when the app opens, comes to the foreground, or a record changes.
+ * - On the last day of the month: uploads this month's file (re-uploads after each new reading that day).
+ * - Catch-up: if last month's file is missing or out of date (e.g. app not opened on the last day), uploads it.
+ */
+async function autoUpload() {
+  if (uploading || !driveReady() || settings.driveAuto === false || !navigator.onLine) return;
+  const d = new Date(), prev = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+  const due = [[prev.getFullYear(), prev.getMonth()]];
+  if (isLastDayOfMonth(d)) due.push([d.getFullYear(), d.getMonth()]);
+  uploading = true;
+  try {
+    for (const [y, m] of due) {
+      const list = monthRecords(y, m);
+      if (!list.length || settings.uploaded?.[monthKey(y, m)] === monthSig(list)) continue;
+      try {
+        const name = await uploadMonth(y, m);
+        settings.lastUploadError = ''; saveSettings(); renderSettings();
+        toast(`☁️ 已自動上傳 ${name} 到 Google 雲端硬碟`);
+      } catch (e) { settings.lastUploadError = e.message; saveSettings(); renderSettings(); }
+    }
+  } finally { uploading = false; }
 }
 function nextWeekday(dow, hh, mm) {
   const d = new Date(); d.setHours(hh, mm, 0, 0);
@@ -522,6 +588,30 @@ $('#icsDaily').onclick = () => {
   const d = new Date(); d.setHours(h, m, 0, 0); if (d < new Date()) d.setDate(d.getDate() + 1);
   downloadICS(`量血壓提醒_${fmtTime(`${pad(h)}:${pad(m)}`)}.ics`, `bp-daily-${pad(h)}${pad(m)}@bp-recorder`, d, 'FREQ=DAILY', '量血壓時間到了 🩺', '量完記得打開「血壓紀錄」App 記錄');
 };
+function saveDriveSettings() {
+  settings.driveUrl = $('#driveUrl').value.trim();
+  settings.driveSecret = $('#driveSecret').value.trim();
+  settings.driveAuto = $('#driveAuto').checked;
+  saveSettings();
+}
+['driveUrl', 'driveSecret', 'driveAuto'].forEach((id) => $('#' + id).addEventListener('change', () => { saveDriveSettings(); renderSettings(); }));
+async function driveAction(btn, fn) {
+  saveDriveSettings();
+  if (!driveReady()) return toast('請先填寫上傳網址和密碼');
+  if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(settings.driveUrl)) return toast('網址應以 https://script.google.com/ 開頭');
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '處理中…';
+  try { toast(await fn()); settings.lastUploadError = ''; saveSettings(); renderSettings(); }
+  catch (e) { toast('失敗：' + (e.message === 'Failed to fetch' || e.message === 'Load failed' ? '連線失敗，請檢查網址或網路' : e.message)); }
+  finally { btn.disabled = false; btn.textContent = label; }
+}
+$('#driveTest').onclick = (e) => driveAction(e.target, async () => `✅ 連線成功：資料夾「${(await drivePost({ test: true })).folder}」`);
+$('#driveNowPrev').onclick = (e) => driveAction(e.target, async () => {
+  const p = new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
+  return `☁️ 已上傳 ${await uploadMonth(p.getFullYear(), p.getMonth())}`;
+});
+$('#driveNowCur').onclick = (e) => driveAction(e.target, async () => `☁️ 已上傳 ${await uploadMonth(new Date().getFullYear(), new Date().getMonth())}`);
+
 $('#backup').onclick = () => {
   const blob = new Blob([JSON.stringify({ app: 'bp-recorder', version: 1, exported: new Date().toISOString(), records }, null, 1)], { type: 'application/json' });
   saveBlob(blob, `血壓備份_${fmtDate(isoDate(new Date())).replace(/\//g, '')}.json`);
@@ -569,9 +659,13 @@ document.addEventListener('visibilitychange', () => {
   // keep the new-record time current when coming back to the app
   if (!addForm.elements.sys.value && !dlg.open) resetAdd();
   renderHome();
+  autoUpload();
 });
+window.addEventListener('online', autoUpload);
 
 renderAll();
+booted = true;
+autoUpload();
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
